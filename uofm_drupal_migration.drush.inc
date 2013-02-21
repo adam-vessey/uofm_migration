@@ -50,7 +50,7 @@ EOQ;
 
   //Query for the source objects...
   dlm(dt('Performing source query...'));
-  $source_results = $source->repository->ri->sparqlQuery($query, 100);
+  $source_results = $source->repository->ri->sparqlQuery($query);
   $source_results = array_map($map_to_pids, $source_results);
   dlm(format_plural(count($source_results), 'Source has 1 object.', 'Source has @count objects.'));
 
