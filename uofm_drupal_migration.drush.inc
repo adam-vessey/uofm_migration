@@ -17,7 +17,66 @@ function uofm_drupal_migration_drush_command() {
       'aliases' => array('mf'),
       'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_LOGIN, // We can pass in users id on the command line using drush -u.
     ),
+    'sample-ocr-to-hocr' => array(
+      'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_LOGIN, // We can pass in users id on the command line using drush -u.
+    ),
   );
+}
+
+function _map_to_pids($result) {
+  return $result['object']['value'];
+}
+
+function drush_uofm_drupal_migration_sample_ocr_to_hocr() {
+  $source = islandora_get_tuque_connection();
+
+  $source_results = $source->repository->ri->sparqlQuery(<<<EOQ
+SELECT ?object
+FROM <#ri>
+WHERE {
+  ?object <fedora-model:hasModel> <info:fedora/fedora-system:FedoraObject-3.0> ;
+          <fedora-view:disseminates> ?dss .
+  ?dss <fedora-view:disseminationType> <info:fedora/*/OCR> ;
+       <fedora-view:mimeType> 'text/xml' .
+  FILTER(regex(str(?object), '^info:fedora/changeme:'))
+}
+ORDER BY ?object
+EOQ
+);
+  $destination_results = $source->repository->ri->sparqlQuery(<<<EOQ
+SELECT ?object
+FROM <#ri>
+WHERE {
+  ?object <fedora-model:hasModel> <info:fedora/fedora-system:FedoraObject-3.0> ;
+          <fedora-view:disseminates> ?dss .
+  ?dss <fedora-view:disseminationType> <info:fedora/*/HOCR> .
+  FILTER(regex(str(?object), '^info:fedora/changeme:'))
+}
+ORDER BY ?object
+EOQ
+);
+  $source_results = array_map('_map_to_pids', $source_results);
+  $destination_results = array_map('_map_to_pids', $destination_results);
+
+  $missing_pids = array_diff($source_results, $destination_results);
+  foreach ($missing_pids as $pid) {
+    $obj = islandora_object_load($pid);
+    $src_ds = $obj['OCR'];
+    $dest = 'HOCR';
+
+    $dest_ds = $obj->constructDatastream($dest, $src_ds->controlGroup);
+    $properties = array('checksumType', 'checksum', 'format', 'mimetype', 'versionable', 'label', 'state');
+    $external = array_search($src_ds->controlGroup, array('R', 'E')) !== FALSE;
+    $properties[] = $external ? 'url' : 'content';
+    $copy_property = function($property) use($src_ds, $dest_ds) { $dest_ds->$property = $src_ds->$property; };
+    array_walk($properties, $copy_property);
+    if ($obj->ingestDatastream($dest_ds) == FALSE) {
+      dlm(dt('Failed to copy OCR for @pid.', array('@pid' => $pid)));
+    }
+    else {
+      dlm(dt('Copied OCR for @pid.', array('@pid' => $pid)));
+    }
+  }
 }
 
 function drush_uofm_drupal_migration_migrate_fedora() {
@@ -44,43 +103,64 @@ WHERE {
 ORDER BY ?object
 EOQ;
 
-  $map_to_pids = function($result) {
-    return $result['object']['value'];
-  };
 
   //Query for the source objects...
   dlm(dt('Performing source query...'));
   $source_results = $source->repository->ri->sparqlQuery($query);
-  $source_results = array_map($map_to_pids, $source_results);
+  $source_results = array_map('_map_to_pids', $source_results);
   dlm(format_plural(count($source_results), 'Source has 1 object.', 'Source has @count objects.'));
 
   //Query for the source objects in the destination...
   dlm(dt('Performing destination query...'));
   $destination_results = $destination->repository->ri->sparqlQuery($query);
-  $destination_results = array_map($map_to_pids, $destination_results);
+  $destination_results = array_map('_map_to_pids', $destination_results);
   dlm(format_plural(count($destination_results), 'Destination has 1 object.', 'Destination has @count objects.'));
 
   //For each object not in the destination, grab and throw
   $missing_in_destination = array_diff($source_results, $destination_results);
-  dlm(format_plural(count($missing_in_destination), 'Source has 1 object which does not exist in the destination.',
+  $total_missing = count($missing_in_destination);
+  dlm(format_plural($total_missing, 'Source has 1 object which does not exist in the destination.',
     'Source has @count objects which do not exist in the destination.'));
+  $i = 0;
   foreach ($missing_in_destination as $missing_pid) {
-    dlm(dt('Missing @pid. Exporting from source...', array('@pid' => $missing_pid)));
-    $response = $source->repository->api->m->export($missing_pid, array(
-      'format' => 'info:fedora/fedora-system:FOXML-1.1',
-      'context' => 'migrate',
-    ));
+    $response = FALSE;
+    try {
+      dlm(dt('Missing @pid. Exporting from source...', array('@pid' => $missing_pid)));
+      $response = $source->repository->api->m->export($missing_pid, array(
+        'format' => 'info:fedora/fedora-system:FOXML-1.1',
+        'context' => 'migrate',
+      ));
 
-    dlm(dt('Got export; about to ingest.'));
-
-    $result = $destination->repository->api->m->ingest(array(
-      'string' => $response,
-    ));
-    if ($result) {
-      dlm(dt('Migrated @pid.', array('@pid' => $missing_pid)));
+      try {
+        dlm(dt('Got export; about to ingest.'));
+        $result = $destination->repository->api->m->ingest(array(
+          'string' => $response,
+        ));
+        if ($result) {
+          dlm(dt('Migrated @pid (@num/@total).', array(
+            '@pid' => $missing_pid,
+            '@num' => ++$i,
+            '@total' => $total_missing,
+          )));
+        }
+        else {
+          dlm(dt('Failed to migrate @pid.', array('@pid' => $missing_pid)));
+        }
+      }
+      catch (RepositoryException $e) {
+        // Failed to import.
+        dlm(dt('Failed to export @pid. Message: %message', array(
+          '%message' => $e->getMessage(),
+          '@pid' => $missing_pid,
+        )));
+      }
     }
-    else {
-      dlm(dt('Failed to migrate @pid.', array('@pid' => $missing_pid)));
+    catch (RepositoryException $e) {
+      // Failed to export.
+      dlm(dt('Failed to import @pid. Message: %message', array(
+        '%message' => $e->getMessage(),
+        '@pid' => $missing_pid,
+      )));
     }
   }
 }
