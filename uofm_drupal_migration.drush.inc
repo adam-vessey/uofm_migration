@@ -20,11 +20,69 @@ function uofm_drupal_migration_drush_command() {
     'sample-ocr-to-hocr' => array(
       'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_LOGIN, // We can pass in users id on the command line using drush -u.
     ),
+    'regenerate-hocr-from-page' => array(
+      'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_LOGIN, // We can pass in users id on the command line using drush -u.
+    ),
   );
 }
 
 function _map_to_pids($result) {
   return $result['object']['value'];
+}
+
+function drush_uofm_drupal_migration_regenerate_hocr_from_page() {
+  $source = islandora_get_tuque_connection();
+
+  $source_results = $source->repository->ri->sparqlQuery(<<<EOQ
+SELECT ?object
+FROM <#ri>
+WHERE {
+  ?object <fedora-model:hasModel> <info:fedora/fedora-system:FedoraObject-3.0> ;
+          <fedora-view:disseminates> ?dss .
+  ?dss <fedora-view:disseminationType> <info:fedora/*/HOCR> ;
+       <fedora-view:mimeType> 'text/xml' .
+  FILTER(regex(str(?object), '^info:fedora/changeme:'))
+}
+ORDER BY ?object
+EOQ
+);
+
+  $source_results = array_map('_map_to_pids', $source_results);
+  $temp_file = drupal_tempnam('temporary://', 'tif');
+  foreach($source_results as $pid) {
+    $obj = islandora_object_load($pid);
+
+    $xsl = new DOMDocument();
+    $xsl->load(drupal_get_path('module', 'uofm_newspaper_batch') . '/transforms/iarchive_to_hocr.xsl');
+
+    $input = new DOMDocument();
+    $input->loadXML($obj['page']->content);
+
+    $processor = new XSLTProcessor();
+    $processor->importStylesheet($xsl);
+
+    $base_hocr = $processor->transformToXML($input);
+
+    $obj['OBJ']->getContent($temp_file);
+    list($width, $height) = getimagesize($temp_file);
+
+    $xml = new SimpleXMLElement($base_hocr);
+    $xml->registerXPathNamespace('x', 'http://www.w3.org/1999/xhtml');
+    $pages = $xml->xpath('/x:html/x:body/x:div[@class="ocr_page"][1]');
+    if ($pages) {
+      // Grab the page.
+      $page = reset($pages);
+      $page['title'] = format_string('image "!image"; bbox 0 0 !width !height', array(
+        '!image' => $temp_file,
+        '!width' => $width,
+        '!height' => $height,
+      ));
+    }
+
+    $obj['HOCR']->content = $xml->asXML();
+    drush_log(dt('Regenerated @pid/HOCR.', array('@pid' => $pid)), 'info');
+  }
+  drupal_unlink($temp_file);
 }
 
 function drush_uofm_drupal_migration_sample_ocr_to_hocr() {
