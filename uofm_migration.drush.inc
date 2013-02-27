@@ -49,24 +49,38 @@ function uofm_migration_process_queries($source, $destination, $start_message, $
   }
 }
 
+
 function drush_uofm_migration_adjust_models() {
-  $transforms = array(
+  $transforms_to_add = array(
     'islandora:sp_basic_image' => 'sameTerm(?model, <info:fedora/uofm:compoundPrairieBuildingImage>) ||
-sameTerm(?model, <info:fedora/uofm:compoundLowResImage>)',
-    'islandora:sp_large_image_cmodel' => 'sameTerm(?model, <info:fedora/uofm:compoundHighResImage>)',
-    'islandora:compoundCModel' => 'sameTerm(?model, <info:fedora/uofm:prairieBuilding>) ||
+sameTerm(?model, <info:fedora/uofm:compoundLowResImage>) ||
+((sameTerm(?model, <info:fedora/uofm:lowResImage>) || sameTerm(?model, <info:fedora/uofm:prairieBuildingImage>)) && sameTerm(?datastream, <info:fedora/*/OBJ>) && !bound(?child))',
+    'islandora:sp_large_image_cmodel' => 'sameTerm(?model, <info:fedora/uofm:compoundHighResImage>) ||
+(sameTerm(?model, <info:fedora/uofm:highResImage>) && sameTerm(?datastream, <info:fedora/*/OBJ>) && !bound(?child))',
+    'islandora:compoundCModel' => '(sameTerm(?model, <info:fedora/uofm:prairieBuilding>) ||
 sameTerm(?model, <info:fedora/uofm:highResImage>) ||
-sameTerm(?model, <info:fedora/uofm:lowResImage>)',
+sameTerm(?model, <info:fedora/uofm:lowResImage>)) && bound(?child)',
     'islandora:bookCModel' => 'sameTerm(?model, <info:fedora/archiveorg:bookCModel>)',
     'islandora:pageCModel' => 'sameTerm(?model, <info:fedora/archiveorg:pageCModel>)',
   );
 
-  foreach ($transforms as $destination => $filter) {
+  $transforms_to_remove = array(
+    'islandora:compoundCModel' => '(sameTerm(?model, <info:fedora/uofm:prairieBuilding>) ||
+sameTerm(?model, <info:fedora/uofm:highResImage>) ||
+sameTerm(?model, <info:fedora/uofm:lowResImage>)) && !bound(?child)',
+  );
+
+  foreach ($transforms_to_add as $destination => $filter) {
     $source_query = <<<EOQ
 SELECT ?object
 FROM <#ri>
 WHERE {
-  ?object <fedora-model:hasModel> ?model .
+  ?object <fedora-model:hasModel> ?model ;
+          <fedora-view:disseminates> ?dss .
+  ?dss <fedora-view:disseminationType> ?datastream .
+  OPTIONAL {
+    ?child <fedora-rels-ext:isPartOf> ?object .
+  }
   FILTER($filter)
 }
 ORDER BY ?object
@@ -77,7 +91,12 @@ SELECT ?object
 FROM <#ri>
 WHERE {
   ?object <fedora-model:hasModel> ?model ;
-          <fedora-model:hasModel> <info:fedora/$destination> .
+          <fedora-model:hasModel> <info:fedora/$destination> ;
+          <fedora-view:disseminates> ?dss .
+  ?dss <fedora-view:disseminationType> ?datastream .
+  OPTIONAL {
+    ?child <fedora-rels-ext:isPartOf> ?object .
+  }
   FILTER($filter)
 }
 ORDER BY ?object
@@ -85,10 +104,54 @@ EOQ;
 
     uofm_migration_process_queries($source_query, $destination_query, dt("Adding @uri...", array(
       '@uri' => $destination,
-    )), function ($pid) use ($destination) {
+    )), dt('@pid (@i/@t).'), function ($pid) use ($destination) {
       $obj = islandora_object_load($pid);
       if ($obj) {
         $obj->models = $destination;
+      }
+    });
+  }
+
+  foreach ($transforms_to_remove as $destination => $filter) {
+    $source_query = <<<EOQ
+SELECT ?object
+FROM <#ri>
+WHERE {
+  ?object <fedora-model:hasModel> ?model ;
+          <fedora-model:hasModel> <info:fedora/$destination> ;
+          <fedora-view:disseminates> ?dss .
+  ?dss <fedora-view:disseminationType> ?datastream .
+  OPTIONAL {
+    ?child <fedora-rels-ext:isPartOf> ?object .
+  }
+  FILTER($filter)
+}
+ORDER BY ?object
+EOQ;
+
+    // XXX: A query to find nothing... Great fun.
+    $destination_query = <<<EOQ
+SELECT ?object
+FROM <#ri>
+WHERE {
+  ?object <fedora-model:hasModel> ?model ;
+          <find-nothing:real-good> 'asdf' ;
+          <fedora-view:disseminates> ?dss .
+  ?dss <fedora-view:disseminationType> ?datastream .
+  OPTIONAL {
+    ?child <fedora-rels-ext:isPartOf> ?object .
+  }
+  FILTER(($filter) && !sameTerm(?model, <info:fedora/$destination>))
+}
+ORDER BY ?object
+EOQ;
+
+    uofm_migration_process_queries($source_query, $destination_query, dt("Removing @uri...", array(
+      '@uri' => $destination,
+    )), dt('@pid (@i/@t).'), function ($pid) use ($destination) {
+      $obj = islandora_object_load($pid);
+      if ($obj) {
+        $obj->relationships->remove(FEDORA_MODEL_URI, 'hasModel', $destination);
       }
     });
   }
@@ -140,7 +203,6 @@ EOQ;
       '@source' => $source_datastream_id,
       '@destination' => $destination_datastream_id,
     )), dt('Copying @pid (@i/@t).'), function ($pid) use ($source_datastream_id, $destination_datastream_id, $temp_file) {
-      return; // Break it for testing...
       $obj = islandora_object_load($pid);
       $src_ds = $obj[$source_datastream_id];
       $dest = $destination_datastream_id;
