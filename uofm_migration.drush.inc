@@ -11,6 +11,9 @@ function uofm_migration_drush_command() {
     'generate-hocr' => array(
       'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_LOGIN, // We can pass in users id on the command line using drush -u.
     ),
+    'generate-dimensions' => array(
+      'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_LOGIN, // We can pass in users id on the command line using drush -u.
+    ),
     'move-datastreams' => array(
       'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_LOGIN, // We can pass in users id on the command line using drush -u.
     ),
@@ -372,3 +375,35 @@ EOQ;
   uofm_migration_process_queries($source, $dest, dt("Generating HOCR..."), dt('@pid (@i/@t).'), 'uofm_migration_generate_hocr');
 }
 
+function uofm_migration_generate_dimensions($pid) {
+  $obj = islandora_object_load($pid);
+  if ($obj) {
+    module_load_include('inc', 'islandora_paged_content', 'includes/utilities');
+    islandora_paged_content_add_dimensions_relationships($obj);
+  }
+}
+
+function drush_uofm_migration_generate_dimensions() {
+  $source = <<<EOQ
+SELECT ?object
+FROM <#ri>
+WHERE {
+  ?object <fedora-model:hasModel> <info:fedora/islandora:pageCModel> ;
+          <fedora-view:disseminates> [<fedora-view:disseminationType> <info:fedora/*/OBJ>]
+}
+EOQ;
+  $dest = <<<EOQ
+PREFIX islandora-rels-ext: <http://islandora.ca/ontology/relsext#>
+SELECT ?object
+FROM <#ri>
+WHERE {
+  ?object <fedora-model:hasModel> <info:fedora/islandora:pageCModel> ;
+          <fedora-view:disseminates> ?dss .
+  ?dss <fedora-view:disseminationType> <info:fedora/*/JP2> ;
+       islandora-rels-ext:width ?width ;
+       islandora-rels-ext:height ?height .
+}
+EOQ;
+
+  uofm_migration_process_queries($source, $dest, dt("Generating HOCR..."), dt('@pid (@i/@t).'), 'uofm_migration_generate_dimensions');
+}
