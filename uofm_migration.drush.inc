@@ -8,6 +8,9 @@ function uofm_migration_drush_command() {
     'generate-fits' => array(
       'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_LOGIN, // We can pass in users id on the command line using drush -u.
     ),
+    'generate-hocr' => array(
+      'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_LOGIN, // We can pass in users id on the command line using drush -u.
+    ),
     'move-datastreams' => array(
       'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_LOGIN, // We can pass in users id on the command line using drush -u.
     ),
@@ -21,13 +24,39 @@ function uofm_migration_map_to_pids($result) {
   return $result['object']['value'];
 }
 
+function uofm_migration_stash_pids($pids, &$context) {
+  $context['results']['pids'] = $pids;
+}
+
+function uofm_migration_batch_op($action, $message, &$context) {
+  if (!isset($context['sandbox']['progress'])) {
+    $context['sandbox']['progress'] = 0;
+    $context['sandbox']['total'] = count($context['results']['pids']);
+  }
+  //dlm($context['results']);
+
+  $i = &$context['sandbox']['progress'];
+  $total = &$context['sandbox']['total'];
+
+  $pid = $context['results']['pids'][$i];
+
+  drush_log(format_string($message, array(
+    '@pid' => $pid,
+    '@i' => ++$i,
+    '@t' => $total,
+  )));
+  call_user_func($action, $pid);
+
+  $context['finished'] = $i / $total;
+}
+
 function uofm_migration_process_queries($source, $destination, $start_message, $individual_message, $action) {
   $connection = islandora_get_tuque_connection();
 
   $initial_process_pids = array_map('uofm_migration_map_to_pids', $connection->repository->ri->sparqlQuery($source));
   $destination_process_pids = array_map('uofm_migration_map_to_pids', $connection->repository->ri->sparqlQuery($destination));
 
-  $pids_to_process = array_diff($initial_process_pids, $destination_process_pids);
+  $pids_to_process =array_values(array_diff($initial_process_pids, $destination_process_pids));
 
   $total = count($pids_to_process);
 
@@ -38,15 +67,16 @@ function uofm_migration_process_queries($source, $destination, $start_message, $
     '@t' => $total,
   )));
 
-  $i = 0;
-  foreach ($pids_to_process as $to_process) {
-    drush_log(format_string($individual_message, array(
-      '@pid' => $to_process,
-      '@i' => ++$i,
-      '@t' => $total,
-    )));
-    call_user_func($action, $to_process);
-  }
+  $batch = array(
+    'title' => 'Batching...',
+    'operations' => array(
+      array('uofm_migration_stash_pids', array($pids_to_process)),
+      array('uofm_migration_batch_op', array($action, $individual_message)),
+    ),
+  );
+
+  batch_set($batch);
+  drush_backend_batch_process();
 }
 
 
@@ -178,8 +208,7 @@ SELECT ?object
 FROM <#ri>
 WHERE {
   ?object <fedora-model:hasModel> <info:fedora/$content_model> ;
-          <fedora-view:disseminates> ?dss .
-  ?dss <fedora-view:disseminationType> <info:fedora/*/$source_datastream_id> .
+          <fedora-view:disseminates> [<fedora-view:disseminationType> <info:fedora/*/$source_datastream_id>] .
 }
 ORDER BY ?object
 EOQ;
@@ -189,10 +218,8 @@ SELECT ?object
 FROM <#ri>
 WHERE {
   ?object <fedora-model:hasModel> <info:fedora/$content_model> ;
-          <fedora-view:disseminates> ?ds1 ;
-          <fedora-view:disseminates> ?ds2 .
-  ?ds2 <fedora-view:disseminationType> <info:fedora/*/$destination_datastream_id> .
-  ?ds1 <fedora-view:disseminationType> <info:fedora/*/$source_datastream_id> .
+          <fedora-view:disseminates> [<fedora-view:disseminationType> <info:fedora/*/$source_datastream_id>] ;
+          <fedora-view:disseminates> [<fedora-view:disseminationType> <info:fedora/*/$destination_datastream_id>] .
 }
 ORDER BY ?object
 EOQ;
@@ -289,7 +316,59 @@ EOQ;
   }
 }
 
-function drush_uofm_migration_generate_fits() {
-  module_load_include('inc', 'islandora_fits', 'includes/utilities');
-  islandora_fits_create_techmd($object);
+function uofm_migration_generate_fits($pid) {
+  $obj = islandora_object_load($pid);
+  if ($obj) {
+    module_load_include('inc', 'islandora_fits', 'includes/utilities');
+    islandora_fits_create_techmd($obj);
+  }
 }
+
+function drush_uofm_migration_generate_fits() {
+  $source = <<<EOQ
+SELECT ?object
+FROM <#ri>
+WHERE {
+  ?object <fedora-view:disseminates> [<fedora-view:disseminationType> <info:fedora/*/EXIF>] ;
+          <fedora-view:disseminates> [<fedora-view:disseminationType> <info:fedora/*/OBJ>] .
+}
+EOQ;
+  $dest = <<<EOQ
+SELECT ?object
+FROM <#ri>
+WHERE {
+  ?object <fedora-view:disseminates> [<fedora-view:disseminationType> <info:fedora/*/TECHMD>] .
+}
+EOQ;
+
+  uofm_migration_process_queries($source, $dest, dt("Generating FITS (TECHMD stream)..."), dt('@pid (@i/@t).'), 'uofm_migration_generate_fits');
+}
+
+function uofm_migration_generate_hocr($pid) {
+  $obj = islandora_object_load($pid);
+  if ($obj) {
+    module_load_include('inc', 'islandora_paged_content', 'includes/utilities');
+    islandora_paged_content_page_derive_ocr_datastreams($obj);
+  }
+}
+
+function drush_uofm_migration_generate_hocr() {
+  $source = <<<EOQ
+SELECT ?object
+FROM <#ri>
+WHERE {
+  ?object <fedora-model:hasModel> <info:fedora/islandora:pageCModel> .
+}
+EOQ;
+  $dest = <<<EOQ
+SELECT ?object
+FROM <#ri>
+WHERE {
+  ?object <fedora-model:hasModel> <info:fedora/islandora:pageCModel> ;
+          <fedora-view:disseminates> [<fedora-view:disseminationType> <info:fedora/*/HOCR>] .
+}
+EOQ;
+
+  uofm_migration_process_queries($source, $dest, dt("Generating HOCR..."), dt('@pid (@i/@t).'), 'uofm_migration_generate_hocr');
+}
+
