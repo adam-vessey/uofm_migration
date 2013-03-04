@@ -70,16 +70,18 @@ function uofm_migration_process_queries($source, $destination, $start_message, $
     '@t' => $total,
   )));
 
-  $batch = array(
-    'title' => 'Batching...',
-    'operations' => array(
-      array('uofm_migration_stash_pids', array($pids_to_process)),
-      array('uofm_migration_batch_op', array($action, $individual_message)),
-    ),
-  );
+  if ($total > 0) {
+    $batch = array(
+      'title' => 'Batching...',
+      'operations' => array(
+        array('uofm_migration_stash_pids', array($pids_to_process)),
+        array('uofm_migration_batch_op', array($action, $individual_message)),
+      ),
+    );
 
-  batch_set($batch);
-  drush_backend_batch_process();
+    batch_set($batch);
+    drush_backend_batch_process();
+  }
 }
 
 
@@ -386,11 +388,12 @@ function uofm_migration_generate_dimensions($pid) {
     }
     else {
       $temp_file = drupal_tempnam('temporary://', 'dimensions');
-      $object['OBJ']->getContent($temp_file);
+      $obj['OBJ']->getContent($temp_file);
       list($width, $height) = getimagesize($temp_file);
       drupal_unlink($temp_file);
     }
 
+    $rels = $obj['JP2']->relationships;
     islandora_paged_content_set_relationship($rels, ISLANDORA_RELS_EXT_URI,
       'width', $width, 1
     );
