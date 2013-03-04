@@ -377,9 +377,26 @@ EOQ;
 
 function uofm_migration_generate_dimensions($pid) {
   $obj = islandora_object_load($pid);
+  module_load_include('inc', 'islandora_paged_content', 'includes/utilities');
   if ($obj) {
-    module_load_include('inc', 'islandora_paged_content', 'includes/utilities');
-    islandora_paged_content_add_dimensions_relationships($obj);
+    module_load_include('inc', 'islandora_internet_archive_bookreader', 'includes/utilities');
+    $metadata = islandora_internet_archive_bookreader_get_technical_metadata($obj);
+    if ($metadata) {
+      extract($metadata);
+    }
+    else {
+      $temp_file = drupal_tempnam('temporary://', 'dimensions');
+      $object['OBJ']->getContent($temp_file);
+      list($width, $height) = getimagesize($temp_file);
+      drupal_unlink($temp_file);
+    }
+
+    islandora_paged_content_set_relationship($rels, ISLANDORA_RELS_EXT_URI,
+      'width', $width, 1
+    );
+    islandora_paged_content_set_relationship($rels, ISLANDORA_RELS_EXT_URI,
+      'height', $height, 1
+    );
   }
 }
 
