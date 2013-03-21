@@ -473,10 +473,16 @@ function uofm_migration_reparent_compound_roots($pid) {
     // The relationships are handled separately, and TIFFs should exist in OBJ,
     // where applicable.
     $exclude_dsids = array('RELS-EXT', 'RELS-INT', 'TIFF');
+    $derivatives = array('JP2', 'JPG', 'TN', 'TECHMD');
     foreach ($obj as $dsid => $datastream) {
       if (!in_array($dsid, $exclude_dsids)) {
         $new_object->ingestDatastream($datastream);
         $new_datastream = $new_object[$dsid];
+
+        // XXX: Wipe checksums, as regenerating derivatives may break stuff.
+        if (in_array($dsid, $derivatives) && isset($new_datastream->checksum)) {
+          unset($new_datastream->checksum);
+        }
 
         // Copy RELS-INT.
         uofm_migration_copy_relationships($datastream->relationships, $new_datastream->relationships);
