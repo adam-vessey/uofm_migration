@@ -480,8 +480,13 @@ function uofm_migration_reparent_compound_roots($pid) {
         $new_datastream = $new_object[$dsid];
 
         // XXX: Wipe checksums, as regenerating derivatives may break stuff.
-        if (in_array($dsid, $derivatives) && isset($new_datastream->checksum)) {
+        if ($new_datastream->controlGroup == 'X' && (isset($new_datastream->checksumType) || isset($new_datastream->checksum))) {
+          drush_log(dt('Unsettings checksum info for @dsid on copy of @pid.', array(
+            '@dsid' => $dsid,
+            '@pid' => $pid,
+          )));
           unset($new_datastream->checksum);
+          //unset($new_datastream->checksumType);
         }
 
         // Copy RELS-INT.
@@ -496,12 +501,20 @@ function uofm_migration_reparent_compound_roots($pid) {
     $new_object->relationships->remove(FEDORA_RELS_EXT_URI, 'isMemberOfCollection');
     $new_object->relationships->remove(FEDORA_MODEL_URI, 'hasModel', 'islandora:compoundCModel');
     $new_object->relationships->add('http://islandora.ca/ontology/relsext#', 'copied-from', $obj->id);
+    $new_object->relationships->add(FEDORA_RELS_EXT_URI, 'isPartOf', $obj->id);
 
-    $new_object = islandora_add_object($new_object);
+    try {
+      $new_object = islandora_add_object($new_object);
 
-    $obj->relationships->remove(FEDORA_RELS_EXT_URI, 'isPartOf', $obj->id);
-    $obj->relationships->remove(FEDORA_MODEL_URI, 'hasModel', 'islandora:sp_large_image_cmodel');
-    $obj->relationships->remove(FEDORA_MODEL_URI, 'hasModel', 'islandora:sp_basic_image');
+      $obj->relationships->remove(FEDORA_RELS_EXT_URI, 'isPartOf', $obj->id);
+      $obj->relationships->remove(FEDORA_MODEL_URI, 'hasModel', 'islandora:sp_large_image_cmodel');
+      $obj->relationships->remove(FEDORA_MODEL_URI, 'hasModel', 'islandora:sp_basic_image');
+    }
+    catch (Exception $e) {
+      watchdog_excpetion('uofm_migration', $e, 'Error ingesting copy of @pid.', array(
+        '@pid' => $pid,
+      ), WATCHDOG_ERROR);
+    }
   }
 }
 
@@ -511,7 +524,8 @@ SELECT ?object
 FROM <#ri>
 WHERE {
   ?object <fedora-model:hasModel> <info:fedora/islandora:compoundCModel> ;
-          <fedora-model:hasModel> ?model .
+          <fedora-model:hasModel> ?model ;
+          <fedora-view:disseminates> [<fedora-view:disseminationType> <info:fedora/*/OBJ>] .
   FILTER(sameTerm(?model, <info:fedora/islandora:sp_large_image_cmodel>)
    || sameTerm(?model, <info:fedora/islandra:sp_basic_image>))
 }
