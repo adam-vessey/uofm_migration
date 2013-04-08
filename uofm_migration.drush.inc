@@ -26,6 +26,9 @@ function uofm_migration_drush_command() {
     'generate-thumbnails' => array(
       'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_LOGIN, // We can pass in users id on the command line using drush -u.
     ),
+    'add-missing-part-relationship' => array(
+      'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_LOGIN, // We can pass in users id on the command line using drush -u.
+    ),
   );
 }
 
@@ -575,4 +578,47 @@ WHERE {
 EOQ;
 
   uofm_migration_process_queries($source, $dest, dt('Generating thumbnails...'), dt('Thumbnail @pid (@i/@t).'), 'uofm_migration_generate_thumbnails');
+}
+
+function uofm_migration_add_missing_part_relationship($pid) {
+  $obj = islandora_object_load($pid);
+  if ($obj) {
+    $relationship = $obj->relationships->get('http://islandora.ca/ontology/relsext#', 'copied-from');
+    if ($relationship) {
+      $relationship = reset($relationship);
+      $obj->relationships->add(FEDORA_RELS_EXT_URI, 'isPartOf', $relationship['object']['value'], $relationship['object']['literal']);
+    }
+    else {
+      drush_log('Failed to get the relationship...');
+    }
+  }
+}
+
+function drush_uofm_migration_add_missing_part_relationship() {
+  $source = <<<EOQ
+SELECT ?object
+FROM <#ri>
+WHERE {
+  ?object <http://islandora.ca/ontology/relsext#copied-from> ?other .
+  OPTIONAL {
+   ?object <fedora-rels-ext:isPartOf> ?o .
+  }
+  FILTER(!bound(?o) || !sameTerm(?o, ?other))
+}
+
+EOQ;
+  $dest = <<<EOQ
+SELECT ?object
+FROM <#ri>
+WHERE {
+  ?object <http://islandora.ca/ontology/relsext#copied-from> ?other .
+  OPTIONAL {
+   ?object <fedora-rels-ext:isPartOf> ?o .
+  }
+  FILTER(bound(?o) && sameTerm(?o, ?other))
+}
+
+EOQ;
+
+  uofm_migration_process_queries($source, $dest, dt('Adding missing isPartOf relationship...'), dt('isPartOf on @pid (@i/@t).'), 'uofm_migration_add_missing_part_relationship');
 }
